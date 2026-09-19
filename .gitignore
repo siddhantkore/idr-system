@@ -2,7 +2,7 @@ __pycache__
 venv
 .env
 *.csv
-*.npz
+# *.npz
 *.jpg
 .csv
 .npz

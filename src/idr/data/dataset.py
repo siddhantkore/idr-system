@@ -102,3 +102,32 @@ def build_loaders(processed_dir="data/processed", batch_size=256, num_workers=2)
         "norm": (mean, std),
         "sessions": (train_sessions, val_sessions, test_sessions),
     }
+
+class IDROdomDataset(Dataset):
+    def __init__(self, X, y_odom, mean, std):
+        X = (X - mean) / std
+        self.X = torch.from_numpy(X.astype(np.float32))
+        self.y = torch.from_numpy(y_odom.astype(np.float32))
+
+    def __len__(self):
+        return self.X.shape[0]
+
+    def __getitem__(self, i):
+        return self.X[i], self.y[i]
+
+
+def load_sessions_odom(processed_dir, sessions):
+    X_list, y_list, sess_list = [], [], []
+    for name in sessions:
+        p = Path(processed_dir) / f"{name}.npz"
+        d = np.load(p, allow_pickle=True)
+        if "y_odom" not in d:
+            print(f"[warn] {name} has no y_odom, skipping")
+            continue
+        X_list.append(d["X"])
+        y_list.append(d["y_odom"])
+        sess_list.append(np.full(len(d["y_odom"]), name))
+    X = np.concatenate(X_list, axis=0)
+    y = np.concatenate(y_list, axis=0).astype(np.float32)
+    sess = np.concatenate(sess_list, axis=0)
+    return X, y, sess

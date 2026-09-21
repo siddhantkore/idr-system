@@ -184,7 +184,7 @@ def train(config_path):
                 break
 
     # Final test on the best checkpoint
-    best_ckpt = torch.load(exp_dir / "model_best.pt", map_location=device)
+    best_ckpt = torch.load(exp_dir / "model_best.pt", map_location=device, weights_only=False)
     model.load_state_dict(best_ckpt["model_state"])
     test = evaluate(model, test_loader, device)
     print(f"Best epoch: {best_epoch}")

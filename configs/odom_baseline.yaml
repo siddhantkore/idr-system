@@ -1,0 +1,21 @@
+name: odom_baseline
+seed: 42
+
+data:
+  processed_dir: data/processed
+  batch_size: 256
+  num_workers: 4
+
+model:
+  in_channels: 6
+  hidden: 64
+  gru_hidden: 64
+  dropout: 0.1
+
+train:
+  epochs: 30
+  lr: 0.001
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  scheduler: cosine
+  early_stop_patience: 8

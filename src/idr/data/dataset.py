@@ -7,8 +7,8 @@ from torch.utils.data import Dataset, DataLoader
 
 # Sessions whose stems start with these prefixes go to val / test.
 # Everything else is used for training.
-VAL_PREFIXES  = ["Vfa"]    # motorway, high-speed — good validation of generalization
-TEST_PREFIXES = ["Y"]      # Driver D — held out entirely
+VAL_PREFIXES  = ["Vfa", "Vta01a"]   # add one route from Driver E
+TEST_PREFIXES = ["Y"]                # Driver D — held out entirely
 
 
 def discover_sessions(processed_dir):
@@ -103,17 +103,28 @@ def build_loaders(processed_dir="data/processed", batch_size=256, num_workers=2)
         "sessions": (train_sessions, val_sessions, test_sessions),
     }
 
-class IDROdomDataset(Dataset):
-    def __init__(self, X, y_odom, mean, std):
+class IDRDataset(Dataset):
+    def __init__(self, X, y, mean, std, augment=False):
         X = (X - mean) / std
         self.X = torch.from_numpy(X.astype(np.float32))
-        self.y = torch.from_numpy(y_odom.astype(np.float32))
+        self.y = torch.from_numpy(y.astype(np.float32))
+        self.augment = augment
 
     def __len__(self):
         return self.X.shape[0]
 
     def __getitem__(self, i):
-        return self.X[i], self.y[i]
+        x = self.X[i]
+        y = self.y[i]
+        if self.augment:
+            # Random bias on accel channels (simulates mount difference)
+            x = x.clone()
+            acc_bias = (torch.rand(3) - 0.5) * 0.4      # ±0.2 normalized
+            gyro_bias = (torch.rand(3) - 0.5) * 0.2
+            x[:, :3] = x[:, :3] + acc_bias
+            x[:, 3:] = x[:, 3:] + gyro_bias
+            # Speed scale augmentation is not valid here (y is the target)
+        return x, y
 
 
 def load_sessions_odom(processed_dir, sessions):

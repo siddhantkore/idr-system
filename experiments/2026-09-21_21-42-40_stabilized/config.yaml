@@ -1,0 +1,25 @@
+name: stabilized
+seed: 42
+data:
+  processed_dir: data/processed
+  batch_size: 256
+  num_workers: 8
+  augment: true
+  val_prefixes:
+  - Vfa
+  - Vta01a
+  test_prefixes:
+  - Y
+model:
+  in_channels: 6
+  hidden: 96
+  gru_hidden: 96
+  dropout: 0.2
+train:
+  epochs: 40
+  lr: 0.0005
+  weight_decay: 0.001
+  grad_clip: 1.0
+  scheduler: cosine
+  early_stop_patience: 10
+  warmup_epochs: 5

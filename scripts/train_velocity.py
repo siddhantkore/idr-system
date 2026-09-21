@@ -67,7 +67,7 @@ def evaluate(model, loader, device):
             X = X.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
             pred = model(X)
-            loss_sum += gaussian_nll(pred, y).item() * X.size(0)
+            loss_sum = gaussian_nll(pred, y, mse_only=False, nll_weight=0.05).item()
             err = pred[:, 0] - y
             abs_sum += err.abs().sum().item()
             sq_sum += (err ** 2).sum().item()
@@ -128,6 +128,8 @@ def train(config_path):
     history = []
     t_start = time.time()
 
+    warmup_epochs = cfg["train"].get("warmup_epochs", 5)
+
     for epoch in range(1, t_cfg["epochs"] + 1):
         model.train()
         ep_start = time.time()
@@ -137,7 +139,8 @@ def train(config_path):
             y = y.to(device, non_blocking=True)
             optim.zero_grad(set_to_none=True)
             pred = model(X)
-            loss = gaussian_nll(pred, y)
+            mse_only = (epoch <= warmup_epochs)
+            loss = gaussian_nll(pred, y, mse_only=mse_only, nll_weight=0.05)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), t_cfg["grad_clip"])
             optim.step()

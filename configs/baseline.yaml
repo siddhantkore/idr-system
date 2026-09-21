@@ -15,7 +15,7 @@ model:
   dropout: 0.1
 
 train:
-  epochs: 5
+  epochs: 30
   lr: 0.001
   weight_decay: 0.0001
   grad_clip: 1.0

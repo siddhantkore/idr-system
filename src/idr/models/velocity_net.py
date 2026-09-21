@@ -1,29 +1,16 @@
 # src/idr/models/velocity_net.py
-"""
-Forward velocity estimator for vehicle IDR.
-
-Input:  (B, T, 6)  — 6-axis IMU window (acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z)
-Output: (B, 2)    — [v_hat, log_var]  where v_hat >= 0 and log_var in [-6, 4]
-
-Architecture: causal dilated 1D convolutions + GRU + dual head.
-Trained with Gaussian NLL loss so the model learns aleatoric uncertainty.
-Designed for QAT: only Conv1d, BatchNorm1d, GELU, GRU, Linear — all int8 friendly.
-"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
 class CausalConv1d(nn.Module):
-    """1D convolution with left-only padding (causal)."""
-
     def __init__(self, in_ch, out_ch, kernel_size, dilation=1):
         super().__init__()
         self.pad = (kernel_size - 1) * dilation
         self.conv = nn.Conv1d(in_ch, out_ch, kernel_size, dilation=dilation, padding=0)
 
     def forward(self, x):
-        # x: (B, C, T)
         x = F.pad(x, (self.pad, 0))
         return self.conv(x)
 
@@ -41,58 +28,68 @@ class TCNBlock(nn.Module):
 
 class VelocityNet(nn.Module):
     """
-    Causal velocity estimator.
-    Input shape:  (B, T, 6)
-    Output shape: (B, 2) -> [v_hat, log_var]
+    Causal velocity estimator with mean pooling + last-state GRU head.
+
+    Output: [v_hat, log_var]  (v_hat >= 0, log_var in [-3, 3])
     """
 
-    def __init__(self, in_channels=6, hidden=64, gru_hidden=64, dropout=0.1):
+    def __init__(self, in_channels=6, hidden=96, gru_hidden=96, dropout=0.2):
         super().__init__()
 
         self.tcn = nn.Sequential(
-            TCNBlock(in_channels, 32, kernel_size=5, dilation=1, dropout=dropout),
-            TCNBlock(32, hidden, kernel_size=5, dilation=2, dropout=dropout),
+            TCNBlock(in_channels, 48, kernel_size=5, dilation=1, dropout=dropout),
+            TCNBlock(48, hidden, kernel_size=5, dilation=2, dropout=dropout),
             TCNBlock(hidden, hidden, kernel_size=5, dilation=4, dropout=dropout),
             TCNBlock(hidden, hidden, kernel_size=5, dilation=8, dropout=dropout),
         )
 
         self.gru = nn.GRU(hidden, gru_hidden, num_layers=1, batch_first=True)
 
+        # Feature combination: mean-pooled TCN + last GRU state
+        feat_dim = hidden + gru_hidden
+
         self.speed_head = nn.Sequential(
-            nn.Linear(gru_hidden, 32),
+            nn.Linear(feat_dim, 64),
             nn.GELU(),
-            nn.Linear(32, 1),
+            nn.Dropout(dropout),
+            nn.Linear(64, 1),
         )
         self.logvar_head = nn.Sequential(
-            nn.Linear(gru_hidden, 32),
+            nn.Linear(feat_dim, 64),
             nn.GELU(),
-            nn.Linear(32, 1),
+            nn.Linear(64, 1),
         )
 
     def forward(self, x):
-        # x: (B, T, C) -> permute to (B, C, T) for conv1d
-        x = x.transpose(1, 2)
-        x = self.tcn(x)                 # (B, hidden, T)
-        x = x.transpose(1, 2)           # (B, T, hidden)
-        out, _ = self.gru(x)            # (B, T, gru_hidden)
-        last = out[:, -1, :]            # (B, gru_hidden)
+        # x: (B, T, C)
+        x = x.transpose(1, 2)                     # (B, C, T)
+        tcn_out = self.tcn(x)                     # (B, hidden, T)
+        pooled = tcn_out.mean(dim=-1)             # (B, hidden)
+        seq = tcn_out.transpose(1, 2)             # (B, T, hidden)
+        gru_out, _ = self.gru(seq)                # (B, T, gru_hidden)
+        last = gru_out[:, -1, :]                  # (B, gru_hidden)
+        feat = torch.cat([pooled, last], dim=-1)  # (B, hidden + gru_hidden)
 
-        v_raw = self.speed_head(last)   # (B, 1)
-        v_hat = F.softplus(v_raw)       # >= 0, smooth
+        v_raw = self.speed_head(feat)
+        v_hat = F.softplus(v_raw)
 
-        log_var = self.logvar_head(last)
-        log_var = torch.clamp(log_var, -6.0, 4.0)
-        return torch.cat([v_hat, log_var], dim=-1)   # (B, 2)
+        log_var = self.logvar_head(feat)
+        log_var = torch.clamp(log_var, -3.0, 3.0)
+        return torch.cat([v_hat, log_var], dim=-1)
 
 
-def gaussian_nll(pred, target):
+def gaussian_nll(pred, target, mse_only=False, nll_weight=0.05):
     """
-    pred:   (B, 2) = [v_hat, log_var]
-    target: (B,)   = v_true
-    Returns mean Gaussian NLL.
+    Stable loss:
+      - always compute MSE on the mean
+      - optionally add a small-weighted NLL term after warmup
     """
     v_hat = pred[:, 0]
     log_var = pred[:, 1]
-    # 0.5 * ( exp(-logvar) * (v_hat - v)^2 + logvar )
-    loss = 0.5 * (torch.exp(-log_var) * (v_hat - target) ** 2 + log_var)
-    return loss.mean()
+    mse = ((v_hat - target) ** 2).mean()
+
+    if mse_only:
+        return mse
+
+    nll = 0.5 * (torch.exp(-log_var) * (v_hat - target) ** 2 + log_var)
+    return mse + nll_weight * nll.mean()
